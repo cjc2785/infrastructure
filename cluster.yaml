@@ -1,18 +1,8 @@
 ---
   AWSTemplateFormatVersion: '2010-09-09'
-  Description: 'Accountant microservice infrastructure formation'
+  Description: 'App cluster infrastructure formation'
   Parameters:
-    DbUrl:
-      Type: String
-    DbUser:
-      Type: String
-    DbPassword:
-      Type: String
-      NoEcho: true
-    JwtSecret:
-      Type: String
-      NoEcho: true
-    AccountantVPC:
+    AppVPC:
       Type: AWS::EC2::VPC::Id
     Subnet1:
       Type: AWS::EC2::Subnet::Id 
@@ -45,7 +35,7 @@
       AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
       ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
   Resources:
-    AccountantEC2Role:
+    AppEC2Role:
       Type: AWS::IAM::Role
       Properties:
         AssumeRolePolicyDocument:
@@ -56,7 +46,7 @@
               Action: ['sts:AssumeRole']
         Path: /
         Policies:
-          - PolicyName: accountant-service-policy
+          - PolicyName: app-service-policy
             PolicyDocument:
               Statement:
                 - Effect: Allow
@@ -74,133 +64,87 @@
                     - 'ecr:BatchGetImage'
                     - 'ecr:GetDownloadUrlForLayer'
                   Resource: '*'
-    AccountantEC2Profile:
+    AppEC2Profile:
       Type: AWS::IAM::InstanceProfile
       Properties: 
         Path: /
-        Roles: [!Ref AccountantEC2Role]
-    AccountantALBSecurity:
+        Roles: [!Ref AppEC2Role]
+    AppALBSecurity:
       Type: AWS::EC2::SecurityGroup
       Properties:
-        GroupDescription: Public Access to AccountantALB
-        VpcId: !Ref AccountantVPC
+        GroupDescription: Public Access to AppALB
+        VpcId: !Ref AppVPC
         SecurityGroupIngress:
           - IpProtocol: tcp 
             CidrIp: 0.0.0.0/0
             FromPort: 80
             ToPort: 80
-    AccountantInstanceSecurity:
+          - IpProtocol: tcp 
+            CidrIp: 0.0.0.0/0
+            FromPort: 3000
+            ToPort: 3000
+    AppInstanceSecurity:
       Type: AWS::EC2::SecurityGroup
       Properties:
         GroupDescription: Enable SSH access and HTTP from the load balancer only
-        VpcId: !Ref AccountantVPC
+        VpcId: !Ref AppVPC
         SecurityGroupIngress:
           - IpProtocol: tcp
             FromPort: 22
             ToPort: 22
             CidrIp: !Ref SSHLocation
           - IpProtocol: -1
-            SourceSecurityGroupId: !Ref AccountantALBSecurity
-    AccountantALB:
+            SourceSecurityGroupId: !Ref AppALBSecurity
+    AppALB:
       Type: AWS::ElasticLoadBalancingV2::LoadBalancer
       Properties:
         Type: application
         IpAddressType: ipv4
         Scheme: internet-facing
         SecurityGroups:
-          - !Ref AccountantALBSecurity
+          - !Ref AppALBSecurity
         Subnets:
           - !Ref Subnet1
           - !Ref Subnet2
-    AccountantTG:
-      Type: AWS::ElasticLoadBalancingV2::TargetGroup
-      Properties:
-        HealthCheckIntervalSeconds: 30
-        HealthCheckPath: /api/health
-        HealthCheckPort: traffic-port
-        HealthCheckProtocol: HTTP
-        HealthCheckTimeoutSeconds: 5
-        HealthyThresholdCount: 5
-        Port: 8080
-        Protocol: HTTP
-        UnhealthyThresholdCount: 2
-        TargetType: instance
-        VpcId: !Ref AccountantVPC
-    AccountantALBListener:
-      Type: AWS::ElasticLoadBalancingV2::Listener
-      Properties:
-        Port: 80
-        Protocol: HTTP
-        DefaultActions:
-          - TargetGroupArn: !Ref AccountantTG
-            Type: forward
-        LoadBalancerArn: !Ref AccountantALB
-    AccountantCluster:
+    AppCluster:
       Type: AWS::ECS::Cluster
-    AccountantTD:
-      Type: AWS::ECS::TaskDefinition
-      Properties:
-        Family: accountant-td
-        NetworkMode: bridge
-        ContainerDefinitions:
-            - Name: accountant-container
-              Memory: 512
-              Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/accountant:latest'
-              PortMappings:
-                - HostPort: 0
-                  ContainerPort: 8080
-                  Protocol: tcp
-              Environment:
-                - Name: GCIT_DB_URL
-                  Value: !Ref DbUrl
-                - Name: GCIT_DB_USER
-                  Value: !Ref DbUser
-                - Name: GCIT_DB_PASSWORD
-                  Value: !Ref DbPassword
-                - Name: GCIT_JWT_SECRET
-                  Value: !Ref JwtSecret
-    AccountantInstanceLC:
+    AppInstanceLC:
       Type: AWS::AutoScaling::LaunchConfiguration
       Properties:
         ImageId: !Ref InstanceAMI
         InstanceType: !Ref InstanceType
-        IamInstanceProfile: !Ref AccountantEC2Profile
+        IamInstanceProfile: !Ref AppEC2Profile
         SecurityGroups:
-          - !Ref AccountantInstanceSecurity
+          - !Ref AppInstanceSecurity
           - !Ref DbClientSecurity
         KeyName: !Ref KeyName
         AssociatePublicIpAddress: true
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
-            echo ECS_CLUSTER=${AccountantCluster} >> /etc/ecs/ecs.config
-    AccountantInstanceASG:
+            echo ECS_CLUSTER=${AppCluster} >> /etc/ecs/ecs.config
+    AppInstanceASG:
       Type: AWS::AutoScaling::AutoScalingGroup
       Properties:
-        LaunchConfigurationName: !Ref AccountantInstanceLC
+        LaunchConfigurationName: !Ref AppInstanceLC
         MinSize: 1
-        MaxSize: 1
+        MaxSize: 2
+        DesiredCapacity: 2
         VPCZoneIdentifier:
           - !Ref Subnet1
           - !Ref Subnet2
-    AccountantService:
-      Type: AWS::ECS::Service
-      DependsOn: 
-        - AccountantALBListener
-        - AccountantInstanceASG
-      Properties:
-        ServiceName: accountant-service
-        Cluster: !Ref AccountantCluster
-        DeploymentConfiguration:
-          MinimumHealthyPercent: 0
-          MaximumPercent: 100
-        DesiredCount: 1
-        TaskDefinition: !Ref AccountantTD
-        LoadBalancers:
-          - ContainerName: accountant-container
-            ContainerPort: 8080
-            TargetGroupArn: !Ref AccountantTG
   Outputs:
-    URL:
-      Value: !Sub http://${AccountantALB.DNSName}
-  
+    DNSName:
+      Value: !GetAtt AppALB.DNSName
+    ClusterName:
+      Value: !Ref AppCluster
+      Export:
+        Name: !Sub ${AWS::StackName}:ClusterName
+    ClusterVPC:
+      Value: !Ref AppVPC
+      Export:
+        Name: !Sub ${AWS::StackName}:VpcId
+    ALBArn:
+      Value: !Ref AppALB
+      Export:
+        Name: !Sub ${AWS::StackName}:ALBArn

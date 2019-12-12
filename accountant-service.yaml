@@ -1,0 +1,81 @@
+---
+  AWSTemplateFormatVersion: '2010-09-09'
+  Description: 'Accountant microservice'
+  Parameters:
+    ClusterStack:
+      Type: String
+    DbUrl:
+      Type: String
+    DbUser:
+      Type: String
+    DbPassword:
+      Type: String
+      NoEcho: true
+    JwtSecret:
+      Type: String
+      NoEcho: true
+  Resources:
+    AccountantTG:
+      Type: AWS::ElasticLoadBalancingV2::TargetGroup
+      Properties:
+        HealthCheckIntervalSeconds: 30
+        HealthCheckPath: /api/health
+        HealthCheckPort: traffic-port
+        HealthCheckProtocol: HTTP
+        HealthCheckTimeoutSeconds: 5
+        HealthyThresholdCount: 5
+        Port: 8080
+        Protocol: HTTP
+        UnhealthyThresholdCount: 2
+        TargetType: instance
+        VpcId:
+          Fn::ImportValue: !Sub ${ClusterStack}:VpcId
+    AccountantALBListener:
+      Type: AWS::ElasticLoadBalancingV2::Listener
+      Properties:
+        Port: 80
+        Protocol: HTTP
+        DefaultActions:
+          - TargetGroupArn: !Ref AccountantTG
+            Type: forward
+        LoadBalancerArn: 
+          Fn::ImportValue: !Sub ${ClusterStack}:ALBArn
+    AccountantTD:
+      Type: AWS::ECS::TaskDefinition
+      Properties:
+        Family: accountant-td
+        NetworkMode: bridge
+        ContainerDefinitions:
+            - Name: accountant-container
+              Memory: 512
+              Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/accountant:latest'
+              PortMappings:
+                - HostPort: 0
+                  ContainerPort: 8080
+                  Protocol: tcp
+              Environment:
+                - Name: GCIT_DB_URL
+                  Value: !Ref DbUrl
+                - Name: GCIT_DB_USER
+                  Value: !Ref DbUser
+                - Name: GCIT_DB_PASSWORD
+                  Value: !Ref DbPassword
+                - Name: GCIT_JWT_SECRET
+                  Value: !Ref JwtSecret
+    AccountantService:
+      Type: AWS::ECS::Service
+      DependsOn: 
+        - AccountantALBListener
+      Properties:
+        ServiceName: accountant-service
+        Cluster: 
+          Fn::ImportValue: !Sub ${ClusterStack}:ClusterName
+        DeploymentConfiguration:
+          MinimumHealthyPercent: 0
+          MaximumPercent: 100
+        DesiredCount: 1
+        TaskDefinition: !Ref AccountantTD
+        LoadBalancers:
+          - ContainerName: accountant-container
+            ContainerPort: 8080
+            TargetGroupArn: !Ref AccountantTG

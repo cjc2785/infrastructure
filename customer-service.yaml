@@ -1,0 +1,85 @@
+---
+  AWSTemplateFormatVersion: '2010-09-09'
+  Description: 'Customer microservice'
+  Parameters:
+    ClusterStack:
+      Type: String
+    DbHost:
+      Type: String
+    DbName:
+      Type: String
+    DbUser:
+      Type: String
+    DbPassword:
+      Type: String
+      NoEcho: true
+    StripeSecretKey:
+      Type: String
+      NoEcho: true
+  Resources:
+    CustomerTG:
+      Type: AWS::ElasticLoadBalancingV2::TargetGroup
+      Properties:
+        HealthCheckIntervalSeconds: 30
+        HealthCheckPath: /health
+        HealthCheckPort: traffic-port
+        HealthCheckProtocol: HTTP
+        HealthCheckTimeoutSeconds: 5
+        HealthyThresholdCount: 5
+        Port: 3000
+        Protocol: HTTP
+        UnhealthyThresholdCount: 2
+        TargetType: instance
+        VpcId:
+          Fn::ImportValue: !Sub ${ClusterStack}:VpcId
+    CustomerALBListener:
+      Type: AWS::ElasticLoadBalancingV2::Listener
+      Properties:
+        Port: 3000
+        Protocol: HTTP
+        DefaultActions:
+          - TargetGroupArn: !Ref CustomerTG
+            Type: forward
+        LoadBalancerArn: 
+          Fn::ImportValue: !Sub ${ClusterStack}:ALBArn
+    CustomerTD:
+      Type: AWS::ECS::TaskDefinition
+      Properties:
+        Family: customer-td
+        NetworkMode: bridge
+        ContainerDefinitions:
+            - Name: customer-container
+              Memory: 512
+              Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/customer:latest'
+              PortMappings:
+                - HostPort: 0
+                  ContainerPort: 3000
+                  Protocol: tcp
+              Environment:
+                - Name: DB_HOST
+                  Value: !Ref DbHost
+                - Name: DB_NAME
+                  Value: !Ref DbName
+                - Name: DB_USER
+                  Value: !Ref DbUser
+                - Name: DB_PASSWORD
+                  Value: !Ref DbPassword
+                - Name: STRIPE_SECRET_KEY
+                  Value: !Ref StripeSecretKey
+    CustomerService:
+      Type: AWS::ECS::Service
+      DependsOn: 
+        - CustomerALBListener
+      Properties:
+        ServiceName: customer-service
+        Cluster: 
+          Fn::ImportValue: !Sub ${ClusterStack}:ClusterName
+        DeploymentConfiguration:
+          MinimumHealthyPercent: 0
+          MaximumPercent: 100
+        DesiredCount: 1
+        TaskDefinition: !Ref CustomerTD
+        LoadBalancers:
+          - ContainerName: customer-container
+            ContainerPort: 3000
+            TargetGroupArn: !Ref CustomerTG
